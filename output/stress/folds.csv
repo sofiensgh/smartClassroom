@@ -1,0 +1,10 @@
+fold,mode,test,accuracy,f1,auc
+1,face,p01/rest_01 + p01/stress_01,0.784,0.761,0.839
+1,pulse,p01/rest_01 + p01/stress_01,0.804,0.804,0.926
+1,fusion,p01/rest_01 + p01/stress_01,0.833,0.805,0.899
+2,face,p01/rest_02 + p01/stress_02,0.98,0.98,0.997
+2,pulse,p01/rest_02 + p01/stress_02,0.49,0.071,0.807
+2,fusion,p01/rest_02 + p01/stress_02,0.99,0.99,0.998
+3,face,p01/rest_03 + p01/stress_03,0.618,0.381,1.0
+3,pulse,p01/rest_03 + p01/stress_03,0.598,0.692,0.857
+3,fusion,p01/rest_03 + p01/stress_03,0.902,0.891,1.0
