@@ -7,6 +7,11 @@ import torch
 from torch.utils.data import Dataset
 
 from ..config import PHYS_T
+from ..rppg.pos import bandpass, spectrum_bpm
+
+HR_AUG_RANGE = (45.0, 150.0)   # frequency augmentation: target heart rates (BPM), uniform
+RATE_LIMITS = (0.4, 1.6)       # playback-rate limits (0.4 = 2.5x slower: 110 BPM -> 44 BPM)
+RESTING_HR = 70.0              # "resting" test: videos slowed down to about this heart rate
 
 
 def load_cache(cache_dir):
@@ -115,15 +120,51 @@ def degrade_test_video(frames, seed):
                           blur=(0.7, 0.7), p_blur=1.0, gain=0.0)
 
 
+def ppg_hr(ppg, fs=30.0):
+    """Heart rate (BPM) of a ground-truth PPG segment."""
+    return spectrum_bpm(bandpass(np.asarray(ppg, np.float64), fs), fs)[0]
+
+
+def time_stretch(frames, ppg, rate, start=0.0, n_out=None, block=256):
+    """Play the video AND its PPG at `rate` (0.6 = slower: a 110 BPM pulse becomes 66 BPM).
+    Frames are linearly blended between neighbours, the PPG is interpolated: the label stays exact."""
+    n = len(frames)
+    n_out = n_out or int((n - 1 - start) / rate) + 1
+    pos = start + rate * np.arange(n_out)
+    j = np.clip(np.floor(pos).astype(int), 0, n - 2)
+    a = (pos - j).clip(0, 1).astype(np.float32)[:, None, None, None]
+    out = np.empty((n_out,) + frames.shape[1:], np.uint8)
+    for b in range(0, n_out, block):   # blocks: a whole slowed video in float32 would need a lot of RAM
+        sl = slice(b, b + block)
+        f = frames[j[sl]].astype(np.float32) * (1 - a[sl]) + frames[j[sl] + 1].astype(np.float32) * a[sl]
+        out[sl] = np.clip(f + 0.5, 0, 255).astype(np.uint8)
+    return out, np.interp(pos, np.arange(n), ppg).astype(np.float32)
+
+
+def resting_version(d, target=RESTING_HR):
+    """Slow a whole UBFC video down so its pulse is about `target` BPM (UBFC subjects mostly have 85-120 BPM:
+    they play a stressful game; the app is used at rest). Videos already <= target + 5 are kept."""
+    hr = ppg_hr(d["ppg"], float(d["fps"]))
+    if hr <= target + 5:
+        return d
+    frames, ppg = time_stretch(d["frames"], d["ppg"], target / hr)
+    return {**d, "frames": frames, "ppg": ppg}
+
+
 class ChunkDataset(Dataset):
     """Overlapping PHYS_T-frame chunks of the given subjects -> (clip, ppg)."""
 
-    def __init__(self, data, subjects, t=PHYS_T, stride=None, augment=False, webcam_p=0.0, seed=0):
-        """augment: flip + brightness. webcam_p: probability of webcam_degrade (0 = PhysNet v1)."""
-        self.data, self.t, self.augment, self.webcam_p = data, t, augment, webcam_p
+    def __init__(self, data, subjects, t=PHYS_T, stride=None, augment=False, webcam_p=0.0, freq_p=0.0, seed=0):
+        """augment: flip + brightness. webcam_p: probability of webcam_degrade (v2).
+        freq_p: probability of FREQUENCY augmentation (v3): the clip is played slower/faster so that its
+        heart rate becomes uniform in HR_AUG_RANGE (UBFC alone is biased towards high heart rates)."""
+        self.data, self.t, self.augment, self.webcam_p, self.freq_p = data, t, augment, webcam_p, freq_p
         stride = stride or t // 2
         self.index = [(s, i) for s in subjects for i in range(0, len(data[s]["ppg"]) - t + 1, stride)]
         self.seed = seed
+        # heart rate of each chunk (from the ground-truth PPG, 2x longer window for a precise value)
+        self.hr = ([ppg_hr(data[s]["ppg"][max(0, i - t // 2):i + t + t // 2], float(data[s]["fps"]))
+                    for s, i in self.index] if freq_p > 0 else None)
 
     def __len__(self):
         return len(self.index)
@@ -135,9 +176,22 @@ class ChunkDataset(Dataset):
         if self.augment:
             # torch seeds every DataLoader worker differently each epoch -> different, reproducible augmentations
             r = np.random.default_rng([self.seed, k, int(torch.randint(0, 2 ** 31 - 1, (1,)))])
+            if r.random() < self.freq_p:
+                frames, ppg = self._stretched(s, i, k, r)
             if r.random() < self.webcam_p:
                 frames = webcam_degrade(np.asarray(frames), r)
             if r.random() < 0.5:
                 frames = frames[:, :, ::-1]                       # horizontal flip
             frames = np.clip(frames.astype(np.float32) * r.uniform(0.8, 1.2) + r.uniform(-15, 15), 0, 255)
         return torch.from_numpy(normalize_clip(np.asarray(frames))), torch.from_numpy(zscore(ppg))
+
+    def _stretched(self, s, i, k, r):
+        d, t = self.data[s], self.t
+        n = len(d["ppg"])
+        rate = float(np.clip(r.uniform(*HR_AUG_RANGE) / self.hr[k], *RATE_LIMITS))
+        rate = min(rate, (n - 1) / (t - 1))          # the source must be long enough
+        need = rate * (t - 1) + 1
+        start = min(float(i), n - need)              # stay inside the video
+        a = int(start)
+        src = slice(a, min(n, a + int(np.ceil(need)) + 2))
+        return time_stretch(d["frames"][src], d["ppg"][src], rate, start - a, t)

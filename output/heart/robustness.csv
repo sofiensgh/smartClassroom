@@ -1,0 +1,5 @@
+model,test,MAE,RMSE,pearson_r,windows
+PhysNet v2 (webcam aug),clean,5.432,14.863,0.703,237
+PhysNet v2 (webcam aug),webcam-degraded,5.88,15.43,0.678,237
+PhysNet v1,clean,1.833,5.732,0.959,237
+PhysNet v1,webcam-degraded,3.239,8.064,0.918,237

@@ -1,7 +1,8 @@
 """Step 6 - train PhysNet on UBFC-rPPG and compare it with POS on the SAME test subjects and windows.
 
-    python -m smartclass.training.train_physnet --cache data/ubfc_cache --epochs 30            (v2: webcam augmentation)
-    python -m smartclass.training.train_physnet --cache data/ubfc_cache --webcam-p 0 --name "PhysNet v1"   (v1)
+    python -m smartclass.training.train_physnet --cache data/ubfc_cache --epochs 40            (v3: frequency + webcam aug)
+    python -m smartclass.training.train_physnet --cache data/ubfc_cache --freq-p 0 --webcam-p 0.7 --name "PhysNet v2 (webcam aug)"
+    python -m smartclass.training.train_physnet --cache data/ubfc_cache --freq-p 0 --webcam-p 0 --name "PhysNet v1"
     python -m smartclass.training.train_physnet --cache data/ubfc_cache --eval-only models/physnet_v1.pt
 
 Outputs
@@ -13,8 +14,9 @@ Outputs
     output/heart/bland_altman.png           agreement plot (PhysNet and POS)
     output/heart/example_wave.png           reference PPG vs PhysNet vs POS on a test subject
     output/heart/split.txt                  subjects in train / val / test
-    output/heart/robustness.csv             every model on the CLEAN test videos and on a WEBCAM-DEGRADED copy
-                                            (20 fps + jitter, JPEG 60, noise, blur): the live domain shift, measured
+    output/heart/robustness.csv             every model on the CLEAN test videos, a WEBCAM-DEGRADED copy
+                                            (20 fps + jitter, JPEG 60, noise, blur) and a RESTING copy (videos slowed
+                                            to ~70 BPM: UBFC is biased to high heart rates, the app is used at rest)
 """
 import argparse
 import copy
@@ -32,7 +34,9 @@ from torch.utils.data import DataLoader
 from ..config import HR_DIR, MODELS_DIR, PHYS_SIZE, PHYS_T, UBFC_CACHE
 from ..models.physnet import PhysNet, neg_pearson_loss
 from ..rppg.pos import bandpass, pos, spectrum_bpm
-from .rppg_data import ChunkDataset, degrade_test_video, load_cache, predict_signal, split_subjects, zscore
+from .rppg_data import ppg_hr
+from .rppg_data import (ChunkDataset, degrade_test_video, load_cache, predict_signal, resting_version,
+                        split_subjects, zscore)
 
 WIN_S, STEP_S = 10.0, 2.0   # HR is evaluated on 10 s windows every 2 s (same protocol for both methods)
 
@@ -73,6 +77,10 @@ def degraded(data, subjects):
     return {s: {**data[s], "frames": degrade_test_video(data[s]["frames"], seed=int(s[-2:]))} for s in subjects}
 
 
+def resting(data, subjects):
+    return {s: resting_version(data[s]) for s in subjects}
+
+
 def metrics(rows, method):
     ref = np.array([r["ref"] for r in rows])
     est = np.array([r[method] for r in rows])
@@ -100,6 +108,7 @@ def save_figures(rows, history, example, out):
         a1.set(xlabel="epoch", ylabel="1 - Pearson r", title="Training loss")
         a2.plot(ep, [h["val_clean"] for h in history], color="tab:orange", label="clean")
         a2.plot(ep, [h["val_webcam"] for h in history], color="tab:purple", label="webcam-degraded")
+        a2.plot(ep, [h["val_rest"] for h in history], color="tab:green", label="resting ~70 BPM")
         a2.set(xlabel="epoch", ylabel="MAE (BPM)", title="Validation MAE")
         a2.legend()
         for a in (a1, a2):
@@ -143,7 +152,7 @@ def save_figures(rows, history, example, out):
     _fig(out / "example_wave.png", wave, (10, 3.5))
 
 
-def save_robustness(name, model, data, data_deg, te, device, out, log=print, subharmonic=0.0):
+def save_robustness(name, model, data, data_deg, te, device, out, log=print, subharmonic=0.0, data_rest=None):
     """Update output/heart/robustness.csv with this model on the clean and the webcam-degraded test."""
     rows = []
     if subharmonic > 0:
@@ -151,7 +160,8 @@ def save_robustness(name, model, data, data_deg, te, device, out, log=print, sub
         pos_rows = evaluate(None, data, te, device, with_pos=True, subharmonic=subharmonic, physnet=False)
         m = metrics(pos_rows, "POS")
         log(f"ROBUSTNESS {'POS + harmonic check':28s} {'clean':16s} MAE {m['MAE']:.2f}  RMSE {m['RMSE']:.2f}")
-    for test, d in (("clean", data), ("webcam-degraded", data_deg)):
+    tests = [("clean", data), ("webcam-degraded", data_deg)] + ([("resting ~70 BPM", data_rest)] if data_rest else [])
+    for test, d in tests:
         m = metrics(evaluate(model, d, te, device, subharmonic=subharmonic), "PhysNet")
         rows.append({"model": name, "test": test, **{k: m[k] for k in ("MAE", "RMSE", "pearson_r", "windows")}})
         log(f"ROBUSTNESS {name:28s} {test:16s} MAE {m['MAE']:.2f}  RMSE {m['RMSE']:.2f}  r {m['pearson_r']:.3f}")
@@ -184,11 +194,12 @@ def eval_only(ckpt, cache=UBFC_CACHE, seed=42, out=HR_DIR, name=None, log=print,
         subharmonic = min(scores, key=lambda k: (scores[k], k))
         log(f"chosen on validation: {subharmonic}")
     return save_robustness(name or ck.get("name", Path(ckpt).stem), model, data, degraded(data, te), te, device, out,
-                           log, subharmonic)
+                           log, subharmonic, resting(data, te))
 
 
 def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, width=32,
-        out=HR_DIR, models_dir=MODELS_DIR, webcam_p=0.7, name="PhysNet v2 (webcam aug)", log=print):
+        out=HR_DIR, models_dir=MODELS_DIR, webcam_p=0.5, freq_p=0.5, name="PhysNet v3 (freq + webcam aug)",
+        log=print):
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = load_cache(cache)
@@ -199,11 +210,13 @@ def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, widt
     note = f"train ({len(tr)}): {tr}\nval ({len(va)}): {va}\ntest ({len(te)}): {te}"
     (out / "split.txt").write_text(note + "\n", encoding="utf-8")
     log(f"{len(data)} subjects on {device}\n{note}")
-    log(f"{name}: webcam augmentation probability {webcam_p}")
+    log(f"{name}: webcam augmentation p={webcam_p}, frequency augmentation p={freq_p}")
     data_deg = degraded(data, va + te)   # once: the same degraded videos for every epoch
+    data_rest = resting(data, va + te)
+    log("val/test heart rates: " + ", ".join(f"{s} {ppg_hr(data[s]['ppg']):.0f}" for s in va + te))
 
     g = torch.Generator().manual_seed(seed)
-    train_dl = DataLoader(ChunkDataset(data, tr, augment=True, webcam_p=webcam_p, seed=seed), batch_size=batch, shuffle=True,
+    train_dl = DataLoader(ChunkDataset(data, tr, augment=True, webcam_p=webcam_p, freq_p=freq_p, seed=seed), batch_size=batch, shuffle=True,
                           generator=g, num_workers=2 if device.type == "cuda" else 0, drop_last=True)
     model = PhysNet(width).to(device)
     log(f"PhysNet: {sum(p.numel() for p in model.parameters()):,} parameters, {len(train_dl)} batches/epoch")
@@ -226,13 +239,15 @@ def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, widt
             losses.append(loss.item())
         clean = metrics(evaluate(model, data, va, device), "PhysNet")["MAE"]
         deg = metrics(evaluate(model, data_deg, va, device), "PhysNet")["MAE"]
-        # v2 is chosen for the LIVE use: clean and webcam-like validation count equally
-        val_mae = (clean + deg) / 2 if webcam_p > 0 else clean
+        rest = metrics(evaluate(model, data_rest, va, device), "PhysNet")["MAE"]
+        # chosen for the LIVE use: every condition the model was trained for counts equally
+        parts = [clean] + ([deg] if webcam_p > 0 else []) + ([rest] if freq_p > 0 else [])
+        val_mae = float(np.mean(parts))
         sched.step(val_mae)
         history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "val_mae": val_mae,
-                        "val_clean": clean, "val_webcam": deg})
-        log(f"epoch {epoch}/{epochs}  loss {np.mean(losses):.3f}  val MAE clean {clean:.2f} / webcam {deg:.2f} BPM"
-            f"  ({time.time() - t0:.0f}s)")
+                        "val_clean": clean, "val_webcam": deg, "val_rest": rest})
+        log(f"epoch {epoch}/{epochs}  loss {np.mean(losses):.3f}  val MAE clean {clean:.2f} / webcam {deg:.2f}"
+            f" / resting {rest:.2f} BPM  ({time.time() - t0:.0f}s)")
         if val_mae < best:
             best, best_state, bad = val_mae, copy.deepcopy(model.state_dict()), 0
         else:
@@ -243,13 +258,13 @@ def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, widt
 
     model.load_state_dict(best_state)
     torch.save({"state_dict": model.cpu().state_dict(), "width": width, "t": PHYS_T, "size": PHYS_SIZE,
-                "fs": 30.0, "val_mae": best, "name": name, "webcam_p": webcam_p},
+                "fs": 30.0, "val_mae": best, "name": name, "webcam_p": webcam_p, "freq_p": freq_p},
                models_dir / "physnet.pt")
     model.to(device)
 
     rows = evaluate(model, data, te, device, with_pos=True)
     results = [metrics(rows, "POS"), metrics(rows, "PhysNet")]
-    rob = save_robustness(name, model, data, data_deg, te, device, out, log)
+    rob = save_robustness(name, model, data, data_deg, te, device, out, log, data_rest=data_rest)
     results.append({"method": "PhysNet (webcam-degraded test)",
                     **{k: rob[1][k] for k in ("MAE", "RMSE", "pearson_r", "windows")}})
     with open(out / "results.csv", "w", newline="") as f:
@@ -281,8 +296,9 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", type=Path, default=HR_DIR)
     ap.add_argument("--models-dir", type=Path, default=MODELS_DIR)
-    ap.add_argument("--webcam-p", type=float, default=0.7, help="probability of webcam augmentation (0 = v1)")
-    ap.add_argument("--name", default="PhysNet v2 (webcam aug)")
+    ap.add_argument("--webcam-p", type=float, default=0.5, help="probability of webcam augmentation (0 = v1)")
+    ap.add_argument("--freq-p", type=float, default=0.5, help="probability of frequency augmentation (0 = v1/v2)")
+    ap.add_argument("--name", default="PhysNet v3 (freq + webcam aug)")
     ap.add_argument("--eval-only", type=Path, help="only evaluate this checkpoint (clean + webcam-degraded test)")
     ap.add_argument("--subharmonic", type=float, default=0.0,
                     help="eval-only: harmonic check, take f/2 when its power >= this x the peak; -1 = choose on val")
@@ -291,7 +307,7 @@ def main():
         eval_only(a.eval_only, a.cache, a.seed, a.out, subharmonic=a.subharmonic)
         return
     run(a.cache, a.epochs, a.batch, a.lr, seed=a.seed, width=a.width, out=a.out, models_dir=a.models_dir,
-        webcam_p=a.webcam_p, name=a.name)
+        webcam_p=a.webcam_p, freq_p=a.freq_p, name=a.name)
 
 
 if __name__ == "__main__":

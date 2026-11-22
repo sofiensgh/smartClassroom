@@ -62,7 +62,7 @@ class HeartPage(CameraPage):
         self.phys_wave = SignalPlot("#3ddc97", 90)
         self.phys_model = QComboBox()
         for p in physnet_files():
-            self.phys_model.addItem(p.name + ("  (latest)" if p.stem == "physnet" else ""), str(p))
+            self.phys_model.addItem(p.name + ("  (default)" if p.stem == "physnet" else ""), str(p))
         self.phys_model.setToolTip("Compare PhysNet versions live (v1 = trained without webcam augmentation)")
         self.phys_model.currentIndexChanged.connect(self._model_changed)
 
