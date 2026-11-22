@@ -12,7 +12,10 @@ For every frame we keep (videos are several GB; the cache is ~30 MB per subject)
     face    (T,) bool                  face found in that frame
 """
 import argparse
+import json
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -40,20 +43,61 @@ def read_ground_truth(path):
     return rows[0], rows[1], rows[2]
 
 
+def read_video(path):
+    """-> (fps, n_frames or 0, iterator of BGR frames).
+
+    Uses the ffmpeg command line when it exists (Colab): OpenCV's decoder crashed silently on the
+    large UBFC AVI files there. Falls back to OpenCV (e.g. on Windows without ffmpeg)."""
+    path = str(path)
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        info = json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height,r_frame_rate,nb_frames", "-of", "json", path],
+            capture_output=True, text=True, check=True).stdout)["streams"][0]
+        w, h = int(info["width"]), int(info["height"])
+        num, den = (int(v) for v in info["r_frame_rate"].split("/"))
+        n = int(info["nb_frames"]) if str(info.get("nb_frames", "")).isdigit() else 0
+
+        def frames():
+            proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                                    stdout=subprocess.PIPE)
+            size = w * h * 3
+            try:
+                while True:
+                    buf = proc.stdout.read(size)
+                    if len(buf) < size:
+                        break
+                    yield np.frombuffer(buf, np.uint8).reshape(h, w, 3).copy()
+            finally:
+                proc.stdout.close()
+                proc.kill()
+                proc.wait()
+        return (num / den if den else 30.0), n, frames()
+
+    cap = cv2.VideoCapture(path)
+    fps, n = cap.get(cv2.CAP_PROP_FPS) or 30.0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+    def frames():
+        try:
+            while True:
+                ok, bgr = cap.read()
+                if not ok:
+                    break
+                yield bgr
+        finally:
+            cap.release()
+    return fps, n, frames()
+
+
 def preprocess_video(video_path, gt_path, tracker=None, size=PHYS_SIZE, log=print, detect_every=2):
     from ..vision.face import FaceCropper, FaceTracker, roi_mean_rgb, roi_polygons
     tracker = tracker or FaceTracker()
     cropper = FaceCropper(size=size)
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps, n_total, video = read_video(video_path)
     frames, rgb, face = [], [], []
-    n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     last_rgb = np.full(3, np.nan)
     lms, t0 = None, time.time()
-    while True:
-        ok, bgr = cap.read()
-        if not ok:
-            break
+    for bgr in video:
         i = len(frames)
         # landmarks on every 2nd frame (2x faster; the face barely moves in 1/30 s),
         # but crop + skin colour on EVERY frame
@@ -69,7 +113,6 @@ def preprocess_video(video_path, gt_path, tracker=None, size=PHYS_SIZE, log=prin
                       else np.zeros((size, size, 3), np.uint8))
         rgb.append(last_rgb)
         face.append(lms is not None)
-    cap.release()
     if not frames:
         raise ValueError(f"cannot read {video_path}")
     frames, rgb, face = np.stack(frames), np.array(rgb, np.float32), np.array(face)
