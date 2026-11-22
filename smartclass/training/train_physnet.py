@@ -44,25 +44,27 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def window_hrs(sig_by_method, fs):
+def window_hrs(sig_by_method, fs, subharmonic=0.0):
     """{method: signal} -> list of {method: BPM} for every 10 s window (reference = 'ref')."""
     n = len(next(iter(sig_by_method.values())))
     w, s = int(WIN_S * fs), int(STEP_S * fs)
     rows = []
     for i in range(0, n - w + 1, s):
-        rows.append({m: spectrum_bpm(bandpass(sig[i:i + w], fs), fs)[0] for m, sig in sig_by_method.items()})
+        rows.append({m: spectrum_bpm(bandpass(sig[i:i + w], fs), fs, subharmonic=subharmonic)[0] for m, sig in sig_by_method.items()})
     return rows
 
 
-def evaluate(model, data, subjects, device, with_pos=False):
+def evaluate(model, data, subjects, device, with_pos=False, subharmonic=0.0, physnet=True):
     rows = []
     for sid in subjects:
         d = data[sid]
         fs = float(d["fps"])
-        sigs = {"ref": d["ppg"].astype(np.float64), "PhysNet": predict_signal(model, d["frames"], device)}
+        sigs = {"ref": d["ppg"].astype(np.float64)}
+        if physnet:
+            sigs["PhysNet"] = predict_signal(model, d["frames"], device)
         if with_pos:
             sigs["POS"] = pos(d["rgb"], fs)
-        rows += [{"subject": sid, **r} for r in window_hrs(sigs, fs)]
+        rows += [{"subject": sid, **r} for r in window_hrs(sigs, fs, subharmonic)]
     return rows
 
 
@@ -141,11 +143,16 @@ def save_figures(rows, history, example, out):
     _fig(out / "example_wave.png", wave, (10, 3.5))
 
 
-def save_robustness(name, model, data, data_deg, te, device, out, log=print):
+def save_robustness(name, model, data, data_deg, te, device, out, log=print, subharmonic=0.0):
     """Update output/heart/robustness.csv with this model on the clean and the webcam-degraded test."""
     rows = []
+    if subharmonic > 0:
+        name = f"{name} + harmonic check {subharmonic}"
+        pos_rows = evaluate(None, data, te, device, with_pos=True, subharmonic=subharmonic, physnet=False)
+        m = metrics(pos_rows, "POS")
+        log(f"ROBUSTNESS {'POS + harmonic check':28s} {'clean':16s} MAE {m['MAE']:.2f}  RMSE {m['RMSE']:.2f}")
     for test, d in (("clean", data), ("webcam-degraded", data_deg)):
-        m = metrics(evaluate(model, d, te, device), "PhysNet")
+        m = metrics(evaluate(model, d, te, device, subharmonic=subharmonic), "PhysNet")
         rows.append({"model": name, "test": test, **{k: m[k] for k in ("MAE", "RMSE", "pearson_r", "windows")}})
         log(f"ROBUSTNESS {name:28s} {test:16s} MAE {m['MAE']:.2f}  RMSE {m['RMSE']:.2f}  r {m['pearson_r']:.3f}")
     path = Path(out) / "robustness.csv"
@@ -160,16 +167,24 @@ def save_robustness(name, model, data, data_deg, te, device, out, log=print):
     return rows
 
 
-def eval_only(ckpt, cache=UBFC_CACHE, seed=42, out=HR_DIR, name=None, log=print):
+def eval_only(ckpt, cache=UBFC_CACHE, seed=42, out=HR_DIR, name=None, log=print, subharmonic=0.0):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(ckpt, map_location="cpu", weights_only=True)
     model = PhysNet(ck.get("width", 32))
     model.load_state_dict(ck["state_dict"])
     model.to(device)
     data = load_cache(cache)
-    te = split_subjects(list(data), seed)[2]
+    _, va, te = split_subjects(list(data), seed)
     Path(out).mkdir(parents=True, exist_ok=True)
-    return save_robustness(name or ck.get("name", Path(ckpt).stem), model, data, degraded(data, te), te, device, out, log)
+    if subharmonic < 0:   # auto: chosen on the VALIDATION subjects only (choosing on the test would be leakage)
+        scores = {}
+        for th in (0.0, 0.2, 0.3, 0.4, 0.5, 0.7):
+            scores[th] = metrics(evaluate(model, data, va, device, subharmonic=th), "PhysNet")["MAE"]
+            log(f"harmonic check {th:.1f}: val MAE {scores[th]:.2f}")
+        subharmonic = min(scores, key=lambda k: (scores[k], k))
+        log(f"chosen on validation: {subharmonic}")
+    return save_robustness(name or ck.get("name", Path(ckpt).stem), model, data, degraded(data, te), te, device, out,
+                           log, subharmonic)
 
 
 def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, width=32,
@@ -269,9 +284,11 @@ def main():
     ap.add_argument("--webcam-p", type=float, default=0.7, help="probability of webcam augmentation (0 = v1)")
     ap.add_argument("--name", default="PhysNet v2 (webcam aug)")
     ap.add_argument("--eval-only", type=Path, help="only evaluate this checkpoint (clean + webcam-degraded test)")
+    ap.add_argument("--subharmonic", type=float, default=0.0,
+                    help="eval-only: harmonic check, take f/2 when its power >= this x the peak; -1 = choose on val")
     a = ap.parse_args()
     if a.eval_only:
-        eval_only(a.eval_only, a.cache, a.seed, a.out)
+        eval_only(a.eval_only, a.cache, a.seed, a.out, subharmonic=a.subharmonic)
         return
     run(a.cache, a.epochs, a.batch, a.lr, seed=a.seed, width=a.width, out=a.out, models_dir=a.models_dir,
         webcam_p=a.webcam_p, name=a.name)

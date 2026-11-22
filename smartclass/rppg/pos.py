@@ -38,8 +38,13 @@ def bandpass(x, fs, band=HR_BAND, order=3):
     return filtfilt(b, a, x)
 
 
-def spectrum_bpm(x, fs, band=HR_BAND, n_fft=4096):
-    """Peak of the power spectrum inside the band -> (bpm, snr_db, freqs_bpm, power)."""
+def spectrum_bpm(x, fs, band=HR_BAND, n_fft=4096, subharmonic=0.0):
+    """Peak of the power spectrum inside the band -> (bpm, snr_db, freqs_bpm, power).
+
+    subharmonic > 0: harmonic check. A pulse wave with a strong dicrotic notch (PhysNet learns the real
+    PPG shape) can have its 2nd harmonic above the fundamental; at a slow pulse (~57 BPM) the FFT peak then
+    reads 2x the heart rate (seen on the UBFC test). If the spectrum at f/2 reaches `subharmonic` x the
+    peak power, f/2 is taken as the heart rate. Applied the same way to every method."""
     x = (x - x.mean()) * np.hanning(len(x))
     n_fft = max(n_fft, len(x))
     power = np.abs(np.fft.rfft(x, n_fft)) ** 2
@@ -47,6 +52,10 @@ def spectrum_bpm(x, fs, band=HR_BAND, n_fft=4096):
     inb = (freqs >= band[0]) & (freqs <= band[1])
     f, p = freqs[inb], power[inb]
     f0 = f[np.argmax(p)]
+    if subharmonic > 0 and f0 / 2 >= band[0]:
+        near = np.abs(f - f0 / 2) <= 0.1
+        if near.any() and p[near].max() >= subharmonic * p.max():
+            f0 = f[near][np.argmax(p[near])]
     # SNR (de Haan & Jeanne 2013): power around the peak and its 1st harmonic vs. the rest of the band
     sig = (np.abs(f - f0) <= 0.1) | (np.abs(f - 2 * f0) <= 0.2)
     snr = 10 * np.log10(p[sig].sum() / max(p[~sig].sum(), 1e-12))
