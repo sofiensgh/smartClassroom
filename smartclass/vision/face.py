@@ -32,6 +32,7 @@ class FaceTracker:
         self.landmarker = vision.FaceLandmarker.create_from_options(opts)
         self._t0 = time.monotonic()
         self._last_ts = -1
+        self.blendshapes = None   # (52,) scores of the last frame when blendshapes=True (Step 7: stress)
 
     def process(self, bgr):
         """-> (478, 3) normalised landmarks of the first face, or None."""
@@ -41,7 +42,10 @@ class FaceTracker:
         self._last_ts = ts
         res = self.landmarker.detect_for_video(img, ts)
         if not res.face_landmarks:
+            self.blendshapes = None
             return None
+        if res.face_blendshapes:
+            self.blendshapes = np.array([c.score for c in res.face_blendshapes[0]], dtype=np.float32)
         return np.array([(p.x, p.y, p.z) for p in res.face_landmarks[0]], dtype=np.float32)
 
     def close(self):

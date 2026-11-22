@@ -28,3 +28,22 @@ class TrainWorker(QThread):
         except Exception as e:  # noqa: BLE001 - shown to the user
             self.log.emit(traceback.format_exc())
             self.failed.emit(str(e))
+
+
+class StressTrainWorker(QThread):
+    """Step 7: trains the face / pulse / fusion stress models (cross-validation by session) in a thread."""
+    log = Signal(str)
+    done = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, epochs=30, parent=None):
+        super().__init__(parent)
+        self.epochs = epochs
+
+    def run(self):
+        try:
+            from .train_stress import run  # imports torch: only in this thread
+            self.done.emit(run(epochs=self.epochs, log=self.log.emit))
+        except Exception as e:  # noqa: BLE001 - shown to the user
+            self.log.emit(traceback.format_exc())
+            self.failed.emit(str(e))

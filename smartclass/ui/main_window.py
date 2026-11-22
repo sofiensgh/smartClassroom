@@ -6,6 +6,7 @@ from ..config import APP_NAME, APP_VERSION
 from .heart_page import HeartPage
 from .home_page import HomePage
 from .slides_page import SlidesPage
+from .stress_page import StressPage
 from .training_page import TrainingPage
 from .widgets import PlaceholderPage
 
@@ -20,22 +21,19 @@ class MainWindow(QMainWindow):
         self.slides = SlidesPage()
         self.training = TrainingPage()
         self.heart = HeartPage()
+        self.stress = StressPage()
         pages = [
             ("🏠   Home", HomePage()),
             ("✋   Magic Slides", self.slides),
             ("❤️   Heart Rate", self.heart),
-            ("😰   Stress", PlaceholderPage("😰  Stress Level", "Step 7", [
-                "Heart-rate variability from the pulse signal",
-                "Facial cues: brows, mouth tension, blinking",
-                "Multimodal deep model (CNN + LSTM + fusion) trained on UBFC-Phys",
-                "Score 0-100: relaxed / normal / stressed"])),
+            ("😰   Stress", self.stress),
             ("📊   Dashboard", PlaceholderPage("📊  Teacher Dashboard", "Step 8", [
                 "Gesture control status and current slide",
                 "Anonymous class-average stress over time",
                 "Alerts: 'the class looks stressed, slow down'"])),
             ("🧠   Data & Training", self.training),
         ]
-        self.camera_pages = [self.slides, self.heart, self.training]
+        self.camera_pages = [self.slides, self.heart, self.stress, self.training]
 
         self.nav = QListWidget()
         self.nav.setObjectName("Sidebar")
@@ -74,6 +72,9 @@ class MainWindow(QMainWindow):
         if trainer is not None and not self.training.stop_training(wait_ms=15000):  # stops after the batch
             trainer.terminate()                                # last resort, never leave a running thread
             trainer.wait()
+        st = self.stress.trainer
+        if st is not None:   # stress training is short (CPU, minutes): wait for it
+            st.wait(60000)
         for page in self.camera_pages:
             if not page.stop(5000):
                 self.statusBar().showMessage("Waiting for the camera thread to stop...")

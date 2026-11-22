@@ -1,0 +1,4 @@
+method,MAE,RMSE,pearson_r,windows
+POS,1.287,2.044,0.995,237
+PhysNet,1.882,5.603,0.961,237
+PhysNet (webcam-degraded test),2.668,8.067,0.917,237

@@ -7,7 +7,7 @@ MODELS_DIR = ROOT / "models"
 OUTPUT_DIR = ROOT / "output"
 
 APP_NAME = "Smart Classroom"
-APP_VERSION = "0.6 (Step 6)"
+APP_VERSION = "0.7 (Step 7)"
 
 # Pretrained MediaPipe models (tools only: the deep-learning models of the project are trained by us)
 HAND_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -29,6 +29,16 @@ UBFC_CACHE = DATA_DIR / "ubfc_cache"   # preprocessed subjects (face crops + ROI
 PHYS_SIZE = 72          # face crop size (pixels)
 PHYS_T = 128            # frames per training chunk (~4.3 s at 30 fps)
 PHYS_FS = 30.0          # UBFC-rPPG frame rate; live frames are resampled to it
+
+# Step 7: stress (pilot dataset recorded in the app, protocol like UBFC-Phys: rest vs timed mental arithmetic)
+STRESS_DIR = DATA_DIR / "stress"          # data/stress/<person>/<rest|stress>_<nn>.npz  (numbers only, no video)
+STRESS_OUT = OUTPUT_DIR / "stress"
+STRESS_LABELS = ("rest", "stress")
+STRESS_SESSION_S = 120     # one recording session
+STRESS_WIN_S = 20.0        # one model input = the last 20 s
+STRESS_STEP_S = 2.0        # windows every 2 s (training) / new estimate every 2 s (live)
+STRESS_FACE_FS = 10.0      # blendshapes resampled to 10 Hz  -> (200, 52) sequence
+STRESS_PULSE_FS = 30.0     # POS pulse wave at 30 Hz         -> (600,) signal
 
 # Gestures for Magic Slides (Step 2 dataset, Step 3 models)
 GESTURES = {
