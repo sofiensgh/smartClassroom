@@ -7,7 +7,7 @@ MODELS_DIR = ROOT / "models"
 OUTPUT_DIR = ROOT / "output"
 
 APP_NAME = "Smart Classroom"
-APP_VERSION = "0.5 (Step 5)"
+APP_VERSION = "0.6 (Step 6)"
 
 # Pretrained MediaPipe models (tools only: the deep-learning models of the project are trained by us)
 HAND_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"

@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 from ..config import HR_DIR, MODELS_DIR, PHYS_SIZE, PHYS_T, UBFC_CACHE
 from ..models.physnet import PhysNet, neg_pearson_loss
 from ..rppg.pos import bandpass, pos, spectrum_bpm
-from .rppg_data import ChunkDataset, load_cache, normalize_clip, split_subjects, zscore
+from .rppg_data import ChunkDataset, load_cache, predict_signal, split_subjects, zscore
 
 WIN_S, STEP_S = 10.0, 2.0   # HR is evaluated on 10 s windows every 2 s (same protocol for both methods)
 
@@ -38,26 +38,6 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
-
-@torch.no_grad()
-def predict_signal(model, frames, device, t=PHYS_T, batch=8):
-    """Whole video -> rPPG signal: overlapping chunks (50 %), Hann-weighted overlap-add."""
-    model.eval()
-    n = len(frames)
-    starts = list(range(0, max(n - t, 0) + 1, t // 2))
-    if starts and starts[-1] + t < n:
-        starts.append(n - t)
-    out, wsum, win = np.zeros(n), np.zeros(n), np.hanning(t) + 1e-3
-    for b in range(0, len(starts), batch):
-        idx = starts[b:b + batch]
-        x = torch.from_numpy(np.stack([normalize_clip(frames[i:i + t]) for i in idx])).to(device)
-        with torch.autocast(device.type, enabled=device.type == "cuda"):
-            y = model(x).float().cpu().numpy()
-        for i, yi in zip(idx, y):
-            out[i:i + t] += zscore(yi) * win
-            wsum[i:i + t] += win
-    return out / np.maximum(wsum, 1e-9)
 
 
 def window_hrs(sig_by_method, fs):

@@ -42,6 +42,27 @@ def zscore(v):
     return ((v - v.mean()) / (v.std() + 1e-6)).astype(np.float32)
 
 
+@torch.no_grad()
+def predict_signal(model, frames, device, t=PHYS_T, batch=8):
+    """Whole video -> rPPG signal: overlapping chunks (50 %), Hann-weighted overlap-add.
+    Used for the test evaluation AND live (Step 6b)."""
+    model.eval()
+    n = len(frames)
+    starts = list(range(0, max(n - t, 0) + 1, t // 2))
+    if starts and starts[-1] + t < n:
+        starts.append(n - t)
+    out, wsum, win = np.zeros(n), np.zeros(n), np.hanning(t) + 1e-3
+    for b in range(0, len(starts), batch):
+        idx = starts[b:b + batch]
+        x = torch.from_numpy(np.stack([normalize_clip(frames[i:i + t]) for i in idx])).to(device)
+        with torch.autocast(device.type, enabled=device.type == "cuda"):
+            y = model(x).float().cpu().numpy()
+        for i, yi in zip(idx, y):
+            out[i:i + t] += zscore(yi) * win
+            wsum[i:i + t] += win
+    return out / np.maximum(wsum, 1e-9)
+
+
 class ChunkDataset(Dataset):
     """Overlapping PHYS_T-frame chunks of the given subjects -> (clip, ppg)."""
 

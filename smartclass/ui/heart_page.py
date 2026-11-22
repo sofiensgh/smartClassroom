@@ -1,7 +1,8 @@
-"""Heart Rate page. Step 5: classic rPPG baseline (POS) from a normal webcam.
+"""Heart Rate page. Step 5: classic rPPG baseline (POS). Step 6b: our PhysNet (3D CNN) live, side by side.
 
-Camera thread: FaceLandmarker -> forehead/cheek ROIs -> mean RGB -> POS -> band-pass -> FFT peak (BPM)
-UI thread    : shows BPM, pulse wave, spectrum; logs comparisons with a reference device (smartwatch).
+Camera thread : FaceLandmarker -> forehead/cheek ROIs -> mean RGB -> POS -> band-pass -> FFT peak (BPM)
+                               -> 72x72 face crop -> PhysNet (own thread, every 1.5 s) -> FFT peak (BPM)
+UI thread     : both BPMs, pulse waves, spectrum; logs both against a reference device (smartwatch).
 """
 import csv
 import time
@@ -26,13 +27,15 @@ def _processor_factory(status):
 class HeartPage(CameraPage):
     def __init__(self):
         super().__init__("❤️  Heart Rate",
-                         "Step 5: pulse from the colour of your skin (rPPG), classic POS algorithm = the "
-                         "baseline for PhysNet (Step 6). Sit still, face the light, wait 5-10 s.")
+                         "Pulse from the colour of your skin (rPPG): classic POS algorithm (baseline) vs our "
+                         "PhysNet 3D CNN trained on UBFC-rPPG. Sit still, face the light, wait 5-10 s.")
         self.track_hands = False
         self.show_lm.setText("Show skin regions")
         self.mirror.hide()          # mirroring does not matter for the pulse
         self._last = None
         self._seq = None
+        self._phys = None
+        self._phys_seq = None
 
         self.bpm_lab = QLabel("--")
         self.bpm_lab.setObjectName("BigValue")
@@ -42,6 +45,12 @@ class HeartPage(CameraPage):
         self.progress.setTextVisible(False)
         self.wave = SignalPlot("#ff6b7a", 110)
         self.spec = SignalPlot("#4f8cff", 90, x_range=(HR_BAND[0] * 60, HR_BAND[1] * 60), x_label="BPM")
+
+        # ---- PhysNet (deep model, Step 6)
+        self.phys_lab = QLabel("--")
+        self.phys_lab.setObjectName("BigValue")
+        self.phys_info = label("Start the camera", "Muted")
+        self.phys_wave = SignalPlot("#3ddc97", 90)
 
         # ---- validation against a reference device
         self.ref = QSpinBox()
@@ -61,11 +70,12 @@ class HeartPage(CameraPage):
         val_w.setLayout(grid)
 
         self.add_side(
-            card("Heart rate (POS)", self.bpm_lab, self.quality, self.progress),
-            card("Pulse wave (last 6 s)", self.wave),
-            card("Spectrum", self.spec),
+            card("Heart rate · POS (classic)", self.bpm_lab, self.quality, self.progress),
+            card("Heart rate · PhysNet (deep, ours)", self.phys_lab, self.phys_info, self.phys_wave),
+            card("POS pulse wave (last 6 s)", self.wave),
+            card("POS spectrum", self.spec),
             card("Validation", label("Read your real pulse on a smartwatch or oximeter at the same time, "
-                                     "then log it. Builds the MAE table for the report.", "Muted"),
+                                     "then log it. Logs POS and PhysNet: MAE table for the report.", "Muted"),
                  val_w, self.log_info),
             card("Tips", label("•  Light in front of you, not behind\n•  Do not move or talk\n"
                                "•  No backlight / flickering lamp\n•  Only numbers are saved, never video",
@@ -79,6 +89,7 @@ class HeartPage(CameraPage):
     # ------------------------------------------------------------------ frames
     def on_frame(self, rgb, info):
         self.video.set_frame(rgb)
+        self._on_physnet(info)
         if not info.get("face", False):
             self.quality.setText("⚠ No face detected")
         prog = info.get("hr_progress", 0.0)
@@ -101,9 +112,37 @@ class HeartPage(CameraPage):
         self.wave.set_data(hr["wave"])
         self.spec.set_data(hr["spec"], hr["spec_bpm"], marker=hr["bpm_raw"])
 
+    def _on_physnet(self, info):
+        if info.get("phys_error"):
+            self.phys_info.setText("⚠ " + info["phys_error"])
+            return
+        res = info.get("phys")
+        if res is None:
+            self._phys = None
+            self.phys_lab.setText("--")
+            if info.get("face"):
+                self.phys_info.setText(f"Collecting face frames… ({info.get('phys_progress', 0) * 100:.0f}%)")
+            return
+        if info.get("phys_seq") == self._phys_seq:
+            return
+        self._phys_seq = info.get("phys_seq")
+        if res.get("error"):
+            self.phys_info.setText("⚠ " + res["error"])
+            return
+        self._phys = res
+        self.phys_lab.setText(f"{res['bpm']:.0f} BPM")
+        diff = f"  ·  Δ POS {res['bpm'] - self._last['bpm']:+.0f}" if self._last and self._last["bpm"] else ""
+        self.phys_info.setText(f"SNR {res['snr']:+.1f} dB{diff}  ·  CPU, every 1.5 s")
+        self.phys_wave.set_data(res["wave"])
+
     def camera_stopped(self):
         self._last = None
         self._seq = None
+        self._phys = None
+        self._phys_seq = None
+        self.phys_lab.setText("--")
+        self.phys_info.setText("Start the camera")
+        self.phys_wave.clear()
         self.bpm_lab.setText("--")
         self.quality.setText("Start the camera")
         self.progress.setValue(0)
@@ -122,10 +161,14 @@ class HeartPage(CameraPage):
             w = csv.writer(f)
             if new:
                 w.writerow(["time", "method", "estimate_bpm", "reference_bpm", "abs_error", "snr_db"])
-            est, ref = self._last["bpm"], self.ref.value()
-            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), "POS", f"{est:.1f}", ref, f"{abs(est - ref):.1f}",
-                        f"{self._last['snr']:.2f}"])
-        self.status_message.emit(f"Logged: POS {est:.0f} vs reference {ref} BPM")
+            now, ref = time.strftime("%Y-%m-%d %H:%M:%S"), self.ref.value()
+            msg = []
+            for method, res in (("POS", self._last), ("PhysNet", self._phys)):
+                if res and res.get("bpm") is not None:
+                    est = res["bpm"]
+                    w.writerow([now, method, f"{est:.1f}", ref, f"{abs(est - ref):.1f}", f"{res['snr']:.2f}"])
+                    msg.append(f"{method} {est:.0f}")
+        self.status_message.emit(f"Logged: {', '.join(msg)} vs reference {ref} BPM")
         self._update_log_info()
 
     def _update_log_info(self):
@@ -133,7 +176,10 @@ class HeartPage(CameraPage):
         if not path.exists():
             self.log_info.setText("No measurement logged yet.")
             return
+        errs = {}
         with open(path, newline="") as f:
-            errs = [float(r["abs_error"]) for r in csv.DictReader(f) if r["method"] == "POS"]
+            for r in csv.DictReader(f):
+                errs.setdefault(r["method"], []).append(float(r["abs_error"]))
         if errs:
-            self.log_info.setText(f"{len(errs)} measurements · MAE {sum(errs) / len(errs):.1f} BPM")
+            self.log_info.setText("\n".join(f"{m}: {len(e)} measurements · MAE {sum(e) / len(e):.1f} BPM"
+                                            for m, e in errs.items()))

@@ -19,7 +19,7 @@ ROADMAP = [
     ("Step 3", "Train gesture models (MLP / LSTM / CNN): first run on 1 person, add more people", True),
     ("Step 4", "Magic Slides controls PowerPoint (live LSTM + laser pointer)", True),
     ("Step 5", "Heart rate: classic POS baseline (live BPM, pulse wave, validation log)", True),
-    ("Step 6", "Heart rate: PhysNet deep model", False),
+    ("Step 6", "Heart rate: PhysNet deep model (UBFC-rPPG, live next to POS)", True),
     ("Step 7", "Stress: multimodal deep model", False),
     ("Step 8", "Teacher dashboard", False),
     ("Step 9", "Evaluation + report figures", False),
