@@ -40,19 +40,27 @@ def read_ground_truth(path):
     return rows[0], rows[1], rows[2]
 
 
-def preprocess_video(video_path, gt_path, tracker=None, size=PHYS_SIZE, log=print):
+def preprocess_video(video_path, gt_path, tracker=None, size=PHYS_SIZE, log=print, detect_every=2):
     from ..vision.face import FaceCropper, FaceTracker, roi_mean_rgb, roi_polygons
     tracker = tracker or FaceTracker()
     cropper = FaceCropper(size=size)
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frames, rgb, face = [], [], []
+    n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     last_rgb = np.full(3, np.nan)
+    lms, t0 = None, time.time()
     while True:
         ok, bgr = cap.read()
         if not ok:
             break
-        lms = tracker.process(bgr)
+        i = len(frames)
+        # landmarks on every 2nd frame (2x faster; the face barely moves in 1/30 s),
+        # but crop + skin colour on EVERY frame
+        if i % detect_every == 0:
+            lms = tracker.process(bgr)
+        if log and i and i % 300 == 0:
+            log(f"    frame {i}/{n_total or '?'}  ({time.time() - t0:.0f}s)")
         crop = cropper(bgr, lms)
         if lms is not None:
             v = roi_mean_rgb(bgr, roi_polygons(lms, bgr.shape[1], bgr.shape[0]))
@@ -84,26 +92,39 @@ def main():
     ap.add_argument("--out", type=Path, default=UBFC_CACHE)
     ap.add_argument("--limit", type=int, default=0, help="only the first N subjects (quick test)")
     a = ap.parse_args()
+    log = lambda *m: print(*m, flush=True)   # noqa: E731 - visible progress in Colab
     subjects = find_subjects(a.ubfc)
     if a.limit:
         subjects = subjects[:a.limit]
     if not subjects:
         raise SystemExit(f"No subject*/vid.avi + ground_truth.txt found in {a.ubfc}")
     a.out.mkdir(parents=True, exist_ok=True)
-    print(f"{len(subjects)} subjects -> {a.out}")
+    log(f"{len(subjects)} subjects -> {a.out}")
+    failed = []
     from ..vision.face import FaceTracker
     for i, (sid, vid, gt) in enumerate(subjects, 1):
         out = a.out / f"{sid}.npz"
         if out.exists():
-            print(f"[{i}/{len(subjects)}] {sid}: cached")
+            log(f"[{i}/{len(subjects)}] {sid}: cached")
             continue
         t0 = time.time()
-        d = preprocess_video(vid, gt, tracker=FaceTracker())   # new tracker: timestamps restart per video
-        tmp = out.with_name(out.stem + ".tmp.npz")
-        np.savez_compressed(tmp, **d)
-        tmp.replace(out)
-        print(f"[{i}/{len(subjects)}] {sid}: {len(d['frames'])} frames, face {d['face'].mean():.0%}, "
-              f"mean HR {d['gt_hr_mean']:.0f} BPM, {time.time() - t0:.0f}s")
+        log(f"[{i}/{len(subjects)}] {sid}: reading {vid.stat().st_size / 1e9:.1f} GB video ...")
+        try:
+            tracker = FaceTracker()   # new tracker per video: its timestamps restart
+            d = preprocess_video(vid, gt, tracker=tracker, log=log)
+            tracker.close()
+            if d["face"].mean() < 0.5:
+                raise ValueError(f"face found in only {d['face'].mean():.0%} of the frames")
+            tmp = out.with_name(out.stem + ".tmp.npz")
+            np.savez_compressed(tmp, **d)
+            tmp.replace(out)
+        except Exception as e:  # noqa: BLE001 - one bad video must not stop the other 41
+            failed.append(sid)
+            log(f"[{i}/{len(subjects)}] {sid}: FAILED ({type(e).__name__}: {e})")
+            continue
+        log(f"[{i}/{len(subjects)}] {sid}: {len(d['frames'])} frames, face {d['face'].mean():.0%}, "
+            f"mean HR {d['gt_hr_mean']:.0f} BPM, {time.time() - t0:.0f}s")
+    log(f"done: {len(subjects) - len(failed)} ok" + (f", failed: {failed}" if failed else ""))
 
 
 if __name__ == "__main__":
