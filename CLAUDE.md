@@ -74,6 +74,13 @@ SmartClassroom/
     │   │                        -> models/gesture_<name>.pt (with classes/seq_len/motion meta) + output/gestures/*
     │   ├── metrics.py / plots.py  numpy metrics; matplotlib Figure+Agg (thread-safe, no pyplot)
     │   └── worker.py            TrainWorker(QThread): log/progress/done/failed signals, stop after current batch
+    ├── vision/face.py           FaceTracker (FaceLandmarker VIDEO, 478 pts), ROIS forehead/cheeks (convex hulls),
+    │                            roi_mean_rgb (area-weighted, bbox masks), draw_rois
+    ├── rppg/pos.py              pos() (Wang 2017, overlap-add 1.6 s), bandpass 0.7-4 Hz, spectrum_bpm (+SNR),
+    │                            PulseEstimator: 10 s window, resampled to 30 Hz, median of good estimates
+    ├── rppg/live.py             HeartRateProcessor (camera thread), estimate every 0.5 s, hr_seq counter
+    ├── ui/heart_page.py, ui/plot.py   BPM + pulse wave + spectrum (QPainter plots); validation log ->
+    │                            output/heart/validation.csv (POS vs smartwatch, MAE) for Step 6 comparison
     ├── inference/
     │   ├── controller.py        (no torch) ACTIONS map, available_models(), model_scores(), GestureController:
     │   │                        EMA + threshold 0.8 + 3 consecutive frames + hold (open_palm 0.6 s) + cooldown 1.2 s
@@ -105,7 +112,7 @@ SmartClassroom/
 | 2 ✅ (written + headless-tested 2026-11-22; user must record real data) | **Gesture dataset recorder** in "Data & Training": choose gesture + person ID, countdown, record SEQ_LEN=30 frames of `features()` (+ optional 96×96 hand crops for the CNN), save `data/gestures/<person>/<gesture>/<n>.npz`, live counters, ~100 samples/gesture, several people | builds our dataset |
 | 3 ✅ code + first real run (2026-11-22, Colab T4): p01 only, 99 samples, RANDOM split (1 person) -> test (19 samples) MLP 1.00, LSTM 0.95, GRU 0.84, ablation 0.95, CNN 0.84: pipeline proof only, not report numbers. Results in models/ + output/gestures. Fixes learned: tiny data needs small batches (auto batch = n_train//8) + min_epochs=30, patience 20; swipes must not "return" inside the 2 s window (15 FPS); one zero-filled .npz in OneDrive -> atomic verified save. NEXT: record p02, p03+ then retrain | **Train gesture models** (also launchable from the UI with a progress bar via QThread): MLP baseline, LSTM/GRU main, CNN or CNN+LSTM on crops. Split by person. Curves, confusion matrices, results table | ✅ core DL |
 | 4 ✅ (2026-11-22, WORKS with PowerPoint, confirmed by the user). Key lesson: keys go to the focused window (our app after ticking "Send keys") -> inference/keys.py focuses the slideshow window (class "screenClass", Alt tap + SetForegroundWindow) before pyautogui.press. PostMessage WM_KEYDOWN does NOT work with PowerPoint. COM (comtypes) would be more robust but needs the user's OK to install | **Magic Slides live**: LSTM on a sliding window → smoothed prediction + confidence threshold + cooldown → pyautogui keys (→ ← B), laser-pointer overlay (transparent always-on-top Qt window), zoom | uses the trained model |
-| 5 | **Heart rate, classic POS baseline**: FaceLandmarker ROIs (forehead + cheeks), RGB traces, POS, band-pass 0.7–4 Hz, FFT → BPM; live pulse plot; validate against a smartwatch/oximeter | baseline |
+| 5 ✅ (2026-11-22, live-tested: face 191/191 frames, 68 BPM, SNR +1.6 dB after ~12 s; synthetic test 55/72/95/130 BPM within 0.5 BPM). Camera processor API is now `processor(frame_bgr, ctx)` with ctx={hands, mirror, draw, t}; CameraPage.track_hands=False for face-only pages. Darkness (mean brightness ~10/255) = no face, not a bug | **Heart rate, classic POS baseline**: FaceLandmarker ROIs (forehead + cheeks), RGB traces, POS, band-pass 0.7–4 Hz, FFT → BPM; live pulse plot; validate against a smartwatch/oximeter | baseline |
 | 6 | **PhysNet** (3D CNN) trained on UBFC-rPPG (Kaggle GPU), negative Pearson loss; compare MAE/RMSE/r with POS; live inference in the app | ✅ core DL |
 | 7 | **Stress multimodal model** on UBFC-Phys: face branch + signal branch + fusion; compare with single modalities; output 0–100 + relaxed/normal/stressed | ✅ core DL |
 | 8 | **Teacher dashboard**: gesture status, anonymous class-average stress over time, alerts; students send numbers only | - |

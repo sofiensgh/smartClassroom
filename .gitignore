@@ -4,7 +4,8 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Downloaded automatically on first run
-models/hand_landmarker.task
+models/*.task
+models/*.part
 # Created by `python -m smartclass.training.pack` / downloaded from Colab
 SmartClassroom_train.zip
 SmartClassroom_results*.zip

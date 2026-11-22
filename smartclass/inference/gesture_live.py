@@ -40,7 +40,8 @@ class GestureRecognizer:
         self._hand = h.handedness
         return h
 
-    def __call__(self, hands, mirror):
+    def __call__(self, frame, ctx):
+        hands, mirror = ctx["hands"], ctx["mirror"]
         if self._reset:
             self.L[:] = 0
             self.P[:] = False

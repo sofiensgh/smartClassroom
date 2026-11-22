@@ -3,6 +3,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QHBoxLayout, QListWidget, QMainWindow, QStackedWidget, QWidget
 
 from ..config import APP_NAME, APP_VERSION
+from .heart_page import HeartPage
 from .home_page import HomePage
 from .slides_page import SlidesPage
 from .training_page import TrainingPage
@@ -18,14 +19,11 @@ class MainWindow(QMainWindow):
 
         self.slides = SlidesPage()
         self.training = TrainingPage()
+        self.heart = HeartPage()
         pages = [
             ("🏠   Home", HomePage()),
             ("✋   Magic Slides", self.slides),
-            ("❤️   Heart Rate", PlaceholderPage("❤️  Heart Rate", "Steps 5-6", [
-                "Detect the face and track forehead + cheek regions",
-                "Classic baseline: POS algorithm + band-pass filter + FFT",
-                "Deep model: PhysNet (3D CNN) trained on UBFC-rPPG",
-                "Live BPM, pulse waveform, comparison with a smartwatch"])),
+            ("❤️   Heart Rate", self.heart),
             ("😰   Stress", PlaceholderPage("😰  Stress Level", "Step 7", [
                 "Heart-rate variability from the pulse signal",
                 "Facial cues: brows, mouth tension, blinking",
@@ -37,7 +35,7 @@ class MainWindow(QMainWindow):
                 "Alerts: 'the class looks stressed, slow down'"])),
             ("🧠   Data & Training", self.training),
         ]
-        self.camera_pages = [self.slides, self.training]
+        self.camera_pages = [self.slides, self.heart, self.training]
 
         self.nav = QListWidget()
         self.nav.setObjectName("Sidebar")

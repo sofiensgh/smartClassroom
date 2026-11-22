@@ -7,12 +7,22 @@ MODELS_DIR = ROOT / "models"
 OUTPUT_DIR = ROOT / "output"
 
 APP_NAME = "Smart Classroom"
-APP_VERSION = "0.4 (Step 4)"
+APP_VERSION = "0.5 (Step 5)"
 
 # Pretrained MediaPipe models (tools only: the deep-learning models of the project are trained by us)
 HAND_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
                   "hand_landmarker/float16/1/hand_landmarker.task")
 HAND_MODEL_PATH = MODELS_DIR / "hand_landmarker.task"
+FACE_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+                  "face_landmarker/float16/1/face_landmarker.task")
+FACE_MODEL_PATH = MODELS_DIR / "face_landmarker.task"
+
+# Step 5: heart rate (rPPG)
+HR_WINDOW_S = 10.0      # seconds of signal used for one BPM estimate
+HR_MIN_S = 5.0          # first estimate after this many seconds
+HR_FS = 30.0            # traces are resampled to this rate (the camera FPS is irregular)
+HR_BAND = (0.7, 4.0)    # Hz = 42-240 BPM
+HR_DIR = OUTPUT_DIR / "heart"
 
 # Gestures for Magic Slides (Step 2 dataset, Step 3 models)
 GESTURES = {

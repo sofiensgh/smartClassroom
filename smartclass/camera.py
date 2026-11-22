@@ -28,7 +28,10 @@ class CameraWorker(QThread):
         self.processor = None
 
     def set_processor_factory(self, factory):
-        """factory() -> callable(hands, mirror) -> dict, merged into the frame info. None = no processor."""
+        """factory() -> callable(frame_bgr, ctx) -> dict merged into the frame info. None = no processor.
+
+        ctx = {"hands", "mirror", "draw", "t"}. The processor may draw on frame_bgr (it is shown after),
+        but must read the pixels it needs BEFORE drawing."""
         self._processor_factory = factory
         self._processor_changed = True
 
@@ -69,9 +72,10 @@ class CameraWorker(QThread):
                 self._build_processor()
             if self.processor is not None:
                 try:
-                    info.update(self.processor(hands, self.mirror))
+                    ctx = {"hands": hands, "mirror": self.mirror, "draw": self.draw, "t": time.monotonic()}
+                    info.update(self.processor(frame, ctx))
                 except Exception as e:  # noqa: BLE001 - shown to the user, camera keeps running
-                    self.error.emit(f"Gesture model error: {e}")
+                    self.error.emit(f"Processing error: {e}")
                     self.processor = None
             # crops are cut from the clean frame, before the landmarks are drawn on it
             crops = [crop_hand(frame, h.landmarks, CROP_SIZE) for h in hands] if self.crops else None
@@ -86,14 +90,24 @@ class CameraWorker(QThread):
         cap.release()
         if tracker:
             tracker.close()
+        self._close_processor()
+
+    def _close_processor(self):
+        close = getattr(self.processor, "close", None)
+        if close:
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - best effort on shutdown
+                pass
+        self.processor = None
 
     def _build_processor(self):
         self._processor_changed = False
-        self.processor = None
+        self._close_processor()
         if self._processor_factory is None:
             return
         try:
             self.processor = self._processor_factory()
-            self.status.emit("Gesture model loaded")
+            self.status.emit("Processing ready")
         except Exception as e:  # noqa: BLE001 - shown to the user
             self.error.emit(f"Cannot load the gesture model: {e}")
