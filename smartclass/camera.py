@@ -14,10 +14,12 @@ class CameraWorker(QThread):
     status = Signal(str)
     error = Signal(str)
 
-    def __init__(self, index=0, mirror=True, track_hands=True, draw=True, crops=False, parent=None):
+    def __init__(self, index=0, mirror=True, track_hands=True, draw=True, crops=False, lock_exposure=False,
+                 parent=None):
         super().__init__(parent)
         self.index, self.mirror, self.track_hands, self.draw = index, mirror, track_hands, draw
         self.crops = crops  # also send CROP_SIZE hand crops (BGR), one per hand
+        self.lock_exposure = lock_exposure
         # Set once by stop() and never reset by run(): a stop requested while the camera
         # is still opening (or the model downloading) must not be lost.
         self._stop_requested = False
@@ -58,6 +60,8 @@ class CameraWorker(QThread):
             except Exception as e:  # noqa: BLE001 - shown to the user
                 self.error.emit(f"Hand tracker failed: {e}")
 
+        locked = self.lock_exposure and not self._stop_requested and self._lock_exposure(cap)
+
         fps, last = 0.0, time.monotonic()
         while not self._stop_requested:
             ok, frame = cap.read()
@@ -87,10 +91,45 @@ class CameraWorker(QThread):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             info.update(fps=fps, crops=crops)
             self.frame_ready.emit(rgb, info)
+        if locked:   # the driver keeps the setting: give the camera back in auto mode
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+            cap.set(cv2.CAP_PROP_AUTO_WB, 1)
         cap.release()
         if tracker:
             tracker.close()
         self._close_processor()
+
+    def _lock_exposure(self, cap, exposures=(-8, -7, -6, -5)):
+        """Heart rate: the camera's AUTO exposure / white balance change the image brightness in steps
+        (measured: skin green 150 -> 124 -> 88 in 40 s), which POS and PhysNet see as a fake pulse.
+        Let auto exposure settle, then fix the exposure giving the same brightness (>= -5 keeps 30 fps)."""
+        self.status.emit("Camera: measuring the light (2 s)...")
+        vals = []
+        for _ in range(40):
+            ok, f = cap.read()
+            if not ok or self._stop_requested:
+                return False
+            vals.append(f.mean())
+        target = sum(vals[-10:]) / 10
+        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25):
+            self.status.emit("Camera: exposure cannot be fixed on this webcam (auto exposure kept)")
+            return False
+        cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+        best = None
+        for e in exposures:
+            cap.set(cv2.CAP_PROP_EXPOSURE, e)
+            for _ in range(10):          # the new exposure needs several frames to settle
+                ok, f = cap.read()
+            if not ok:
+                break
+            b = f.mean()
+            if best is None or abs(b - target) < abs(best[1] - target):
+                best = (e, b)
+        if best is None:
+            return True
+        cap.set(cv2.CAP_PROP_EXPOSURE, best[0])
+        self.status.emit(f"Camera: exposure fixed at {best[0]} (brightness {best[1]:.0f}, auto was {target:.0f})")
+        return True
 
     def _close_processor(self):
         close = getattr(self.processor, "close", None)

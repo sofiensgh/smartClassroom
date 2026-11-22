@@ -20,6 +20,7 @@ class CameraPage(QWidget):
         self.worker = None
         self.want_crops = False
         self.track_hands = True   # pages that do not need hands (heart rate) turn this off
+        self.lock_exposure = False   # heart rate: fixed exposure / white balance (auto exposure = fake pulse)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -87,7 +88,8 @@ class CameraPage(QWidget):
         if self.worker:
             return
         w = CameraWorker(self.cam_box.currentIndex(), self.mirror.isChecked(), track_hands=self.track_hands,
-                         draw=self.show_lm.isChecked(), crops=self.want_crops)
+                         draw=self.show_lm.isChecked(), crops=self.want_crops,
+                         lock_exposure=self.lock_exposure)
         w.frame_ready.connect(self.on_frame)
         w.status.connect(self.status_message.emit)
         w.error.connect(lambda msg: self.status_message.emit("⚠ " + msg))

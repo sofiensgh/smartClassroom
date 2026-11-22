@@ -6,6 +6,8 @@ UI thread     : both BPMs, pulse waves, spectrum; logs both against a reference 
 """
 import csv
 import time
+from collections import deque
+from statistics import median
 
 from PySide6.QtWidgets import QGridLayout, QLabel, QProgressBar, QPushButton, QSpinBox, QWidget
 
@@ -30,12 +32,14 @@ class HeartPage(CameraPage):
                          "Pulse from the colour of your skin (rPPG): classic POS algorithm (baseline) vs our "
                          "PhysNet 3D CNN trained on UBFC-rPPG. Sit still, face the light, wait 5-10 s.")
         self.track_hands = False
+        self.lock_exposure = True   # auto exposure steps = fake pulse (measured), see CameraWorker
         self.show_lm.setText("Show skin regions")
         self.mirror.hide()          # mirroring does not matter for the pulse
         self._last = None
         self._seq = None
         self._phys = None
         self._phys_seq = None
+        self._snrs = deque(maxlen=6)   # label = median of the last 3 s, so it does not flicker
 
         self.bpm_lab = QLabel("--")
         self.bpm_lab.setObjectName("BigValue")
@@ -105,10 +109,11 @@ class HeartPage(CameraPage):
             return
         self._seq = info.get("hr_seq")
         self._last = hr
-        good = hr["snr"] >= GOOD_SNR_DB
+        self._snrs.append(hr["snr"])
+        good = median(self._snrs) >= GOOD_SNR_DB
         self.bpm_lab.setText(f"{hr['bpm']:.0f} BPM" if hr["bpm"] is not None else "--")
         self.quality.setText(f"{'✔ Good signal' if good else '⚠ Weak signal (move less, more light)'}"
-                             f"  ·  SNR {hr['snr']:+.1f} dB  ·  window {HR_WINDOW_S:.0f} s")
+                             f"  ·  SNR {median(self._snrs):+.1f} dB  ·  window {HR_WINDOW_S:.0f} s")
         self.wave.set_data(hr["wave"])
         self.spec.set_data(hr["spec"], hr["spec_bpm"], marker=hr["bpm_raw"])
 
@@ -138,6 +143,7 @@ class HeartPage(CameraPage):
     def camera_stopped(self):
         self._last = None
         self._seq = None
+        self._snrs.clear()
         self._phys = None
         self._phys_seq = None
         self.phys_lab.setText("--")
