@@ -1,0 +1,3 @@
+train (28): ['subject01', 'subject03', 'subject04', 'subject05', 'subject10', 'subject12', 'subject13', 'subject14', 'subject15', 'subject16', 'subject17', 'subject18', 'subject20', 'subject22', 'subject23', 'subject25', 'subject30', 'subject31', 'subject32', 'subject35', 'subject38', 'subject39', 'subject41', 'subject42', 'subject43', 'subject44', 'subject45', 'subject48']
+val (6): ['subject09', 'subject11', 'subject26', 'subject36', 'subject40', 'subject46']
+test (8): ['subject08', 'subject24', 'subject27', 'subject33', 'subject34', 'subject37', 'subject47', 'subject49']

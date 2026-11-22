@@ -1,6 +1,8 @@
 """Step 6 - train PhysNet on UBFC-rPPG and compare it with POS on the SAME test subjects and windows.
 
-    python -m smartclass.training.train_physnet --cache data/ubfc_cache --epochs 30
+    python -m smartclass.training.train_physnet --cache data/ubfc_cache --epochs 30            (v2: webcam augmentation)
+    python -m smartclass.training.train_physnet --cache data/ubfc_cache --webcam-p 0 --name "PhysNet v1"   (v1)
+    python -m smartclass.training.train_physnet --cache data/ubfc_cache --eval-only models/physnet_v1.pt
 
 Outputs
     models/physnet.pt                       best checkpoint (lowest validation MAE)
@@ -11,6 +13,8 @@ Outputs
     output/heart/bland_altman.png           agreement plot (PhysNet and POS)
     output/heart/example_wave.png           reference PPG vs PhysNet vs POS on a test subject
     output/heart/split.txt                  subjects in train / val / test
+    output/heart/robustness.csv             every model on the CLEAN test videos and on a WEBCAM-DEGRADED copy
+                                            (20 fps + jitter, JPEG 60, noise, blur): the live domain shift, measured
 """
 import argparse
 import copy
@@ -28,7 +32,7 @@ from torch.utils.data import DataLoader
 from ..config import HR_DIR, MODELS_DIR, PHYS_SIZE, PHYS_T, UBFC_CACHE
 from ..models.physnet import PhysNet, neg_pearson_loss
 from ..rppg.pos import bandpass, pos, spectrum_bpm
-from .rppg_data import ChunkDataset, load_cache, predict_signal, split_subjects, zscore
+from .rppg_data import ChunkDataset, degrade_test_video, load_cache, predict_signal, split_subjects, zscore
 
 WIN_S, STEP_S = 10.0, 2.0   # HR is evaluated on 10 s windows every 2 s (same protocol for both methods)
 
@@ -62,6 +66,11 @@ def evaluate(model, data, subjects, device, with_pos=False):
     return rows
 
 
+def degraded(data, subjects):
+    """Webcam-like copies of whole videos (fixed seed per subject, so every model sees the same ones)."""
+    return {s: {**data[s], "frames": degrade_test_video(data[s]["frames"], seed=int(s[-2:]))} for s in subjects}
+
+
 def metrics(rows, method):
     ref = np.array([r["ref"] for r in rows])
     est = np.array([r[method] for r in rows])
@@ -87,8 +96,10 @@ def save_figures(rows, history, example, out):
         ep = [h["epoch"] for h in history]
         a1.plot(ep, [h["train_loss"] for h in history])
         a1.set(xlabel="epoch", ylabel="1 - Pearson r", title="Training loss")
-        a2.plot(ep, [h["val_mae"] for h in history], color="tab:orange")
+        a2.plot(ep, [h["val_clean"] for h in history], color="tab:orange", label="clean")
+        a2.plot(ep, [h["val_webcam"] for h in history], color="tab:purple", label="webcam-degraded")
         a2.set(xlabel="epoch", ylabel="MAE (BPM)", title="Validation MAE")
+        a2.legend()
         for a in (a1, a2):
             a.grid(alpha=0.3)
     _fig(out / "physnet_curves.png", curves, (10, 4))
@@ -130,8 +141,39 @@ def save_figures(rows, history, example, out):
     _fig(out / "example_wave.png", wave, (10, 3.5))
 
 
+def save_robustness(name, model, data, data_deg, te, device, out, log=print):
+    """Update output/heart/robustness.csv with this model on the clean and the webcam-degraded test."""
+    rows = []
+    for test, d in (("clean", data), ("webcam-degraded", data_deg)):
+        m = metrics(evaluate(model, d, te, device), "PhysNet")
+        rows.append({"model": name, "test": test, **{k: m[k] for k in ("MAE", "RMSE", "pearson_r", "windows")}})
+        log(f"ROBUSTNESS {name:28s} {test:16s} MAE {m['MAE']:.2f}  RMSE {m['RMSE']:.2f}  r {m['pearson_r']:.3f}")
+    path = Path(out) / "robustness.csv"
+    old = []
+    if path.exists():
+        with open(path, newline="") as f:
+            old = [r for r in csv.DictReader(f) if r["model"] != name]
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["model", "test", "MAE", "RMSE", "pearson_r", "windows"])
+        w.writeheader()
+        w.writerows(old + [{k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items()} for r in rows])
+    return rows
+
+
+def eval_only(ckpt, cache=UBFC_CACHE, seed=42, out=HR_DIR, name=None, log=print):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ck = torch.load(ckpt, map_location="cpu", weights_only=True)
+    model = PhysNet(ck.get("width", 32))
+    model.load_state_dict(ck["state_dict"])
+    model.to(device)
+    data = load_cache(cache)
+    te = split_subjects(list(data), seed)[2]
+    Path(out).mkdir(parents=True, exist_ok=True)
+    return save_robustness(name or ck.get("name", Path(ckpt).stem), model, data, degraded(data, te), te, device, out, log)
+
+
 def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, width=32,
-        out=HR_DIR, models_dir=MODELS_DIR, log=print):
+        out=HR_DIR, models_dir=MODELS_DIR, webcam_p=0.7, name="PhysNet v2 (webcam aug)", log=print):
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = load_cache(cache)
@@ -142,9 +184,11 @@ def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, widt
     note = f"train ({len(tr)}): {tr}\nval ({len(va)}): {va}\ntest ({len(te)}): {te}"
     (out / "split.txt").write_text(note + "\n", encoding="utf-8")
     log(f"{len(data)} subjects on {device}\n{note}")
+    log(f"{name}: webcam augmentation probability {webcam_p}")
+    data_deg = degraded(data, va + te)   # once: the same degraded videos for every epoch
 
     g = torch.Generator().manual_seed(seed)
-    train_dl = DataLoader(ChunkDataset(data, tr, augment=True, seed=seed), batch_size=batch, shuffle=True,
+    train_dl = DataLoader(ChunkDataset(data, tr, augment=True, webcam_p=webcam_p, seed=seed), batch_size=batch, shuffle=True,
                           generator=g, num_workers=2 if device.type == "cuda" else 0, drop_last=True)
     model = PhysNet(width).to(device)
     log(f"PhysNet: {sum(p.numel() for p in model.parameters()):,} parameters, {len(train_dl)} batches/epoch")
@@ -165,10 +209,15 @@ def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, widt
             scaler.step(opt)
             scaler.update()
             losses.append(loss.item())
-        val_mae = metrics(evaluate(model, data, va, device), "PhysNet")["MAE"]
+        clean = metrics(evaluate(model, data, va, device), "PhysNet")["MAE"]
+        deg = metrics(evaluate(model, data_deg, va, device), "PhysNet")["MAE"]
+        # v2 is chosen for the LIVE use: clean and webcam-like validation count equally
+        val_mae = (clean + deg) / 2 if webcam_p > 0 else clean
         sched.step(val_mae)
-        history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "val_mae": val_mae})
-        log(f"epoch {epoch}/{epochs}  loss {np.mean(losses):.3f}  val MAE {val_mae:.2f} BPM  ({time.time() - t0:.0f}s)")
+        history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "val_mae": val_mae,
+                        "val_clean": clean, "val_webcam": deg})
+        log(f"epoch {epoch}/{epochs}  loss {np.mean(losses):.3f}  val MAE clean {clean:.2f} / webcam {deg:.2f} BPM"
+            f"  ({time.time() - t0:.0f}s)")
         if val_mae < best:
             best, best_state, bad = val_mae, copy.deepcopy(model.state_dict()), 0
         else:
@@ -179,11 +228,15 @@ def run(cache=UBFC_CACHE, epochs=30, batch=8, lr=1e-3, patience=8, seed=42, widt
 
     model.load_state_dict(best_state)
     torch.save({"state_dict": model.cpu().state_dict(), "width": width, "t": PHYS_T, "size": PHYS_SIZE,
-                "fs": 30.0, "val_mae": best}, models_dir / "physnet.pt")
+                "fs": 30.0, "val_mae": best, "name": name, "webcam_p": webcam_p},
+               models_dir / "physnet.pt")
     model.to(device)
 
     rows = evaluate(model, data, te, device, with_pos=True)
     results = [metrics(rows, "POS"), metrics(rows, "PhysNet")]
+    rob = save_robustness(name, model, data, data_deg, te, device, out, log)
+    results.append({"method": "PhysNet (webcam-degraded test)",
+                    **{k: rob[1][k] for k in ("MAE", "RMSE", "pearson_r", "windows")}})
     with open(out / "results.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(results[0]))
         w.writeheader()
@@ -213,8 +266,15 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", type=Path, default=HR_DIR)
     ap.add_argument("--models-dir", type=Path, default=MODELS_DIR)
+    ap.add_argument("--webcam-p", type=float, default=0.7, help="probability of webcam augmentation (0 = v1)")
+    ap.add_argument("--name", default="PhysNet v2 (webcam aug)")
+    ap.add_argument("--eval-only", type=Path, help="only evaluate this checkpoint (clean + webcam-degraded test)")
     a = ap.parse_args()
-    run(a.cache, a.epochs, a.batch, a.lr, seed=a.seed, width=a.width, out=a.out, models_dir=a.models_dir)
+    if a.eval_only:
+        eval_only(a.eval_only, a.cache, a.seed, a.out)
+        return
+    run(a.cache, a.epochs, a.batch, a.lr, seed=a.seed, width=a.width, out=a.out, models_dir=a.models_dir,
+        webcam_p=a.webcam_p, name=a.name)
 
 
 if __name__ == "__main__":

@@ -9,9 +9,9 @@ import time
 from collections import deque
 from statistics import median
 
-from PySide6.QtWidgets import QGridLayout, QLabel, QProgressBar, QPushButton, QSpinBox, QWidget
+from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QProgressBar, QPushButton, QSpinBox, QWidget
 
-from ..config import HR_BAND, HR_DIR, HR_WINDOW_S
+from ..config import HR_BAND, HR_DIR, HR_WINDOW_S, MODELS_DIR
 from .camera_page import CameraPage
 from .plot import SignalPlot
 from .widgets import card, label
@@ -19,11 +19,16 @@ from .widgets import card, label
 GOOD_SNR_DB = 0.0   # above: the spectrum peak clearly dominates the band
 
 
-def _processor_factory(status):
-    def factory():  # runs in the camera thread (MediaPipe face model + numpy/scipy)
+def _processor_factory(status, phys_path=None):
+    def factory():  # runs in the camera thread (MediaPipe face model + numpy/scipy + torch)
         from ..rppg.live import HeartRateProcessor
-        return HeartRateProcessor(status=status)
+        return HeartRateProcessor(status=status, phys_path=phys_path)
     return factory
+
+
+def physnet_files():
+    """models/physnet*.pt: physnet.pt = latest training (v2), physnet_v1.pt = before webcam augmentation."""
+    return sorted(MODELS_DIR.glob("physnet*.pt"), key=lambda p: (p.stem != "physnet", p.stem))
 
 
 class HeartPage(CameraPage):
@@ -55,6 +60,11 @@ class HeartPage(CameraPage):
         self.phys_lab.setObjectName("BigValue")
         self.phys_info = label("Start the camera", "Muted")
         self.phys_wave = SignalPlot("#3ddc97", 90)
+        self.phys_model = QComboBox()
+        for p in physnet_files():
+            self.phys_model.addItem(p.name + ("  (latest)" if p.stem == "physnet" else ""), str(p))
+        self.phys_model.setToolTip("Compare PhysNet versions live (v1 = trained without webcam augmentation)")
+        self.phys_model.currentIndexChanged.connect(self._model_changed)
 
         # ---- validation against a reference device
         self.ref = QSpinBox()
@@ -75,7 +85,7 @@ class HeartPage(CameraPage):
 
         self.add_side(
             card("Heart rate · POS (classic)", self.bpm_lab, self.quality, self.progress),
-            card("Heart rate · PhysNet (deep, ours)", self.phys_lab, self.phys_info, self.phys_wave),
+            card("Heart rate · PhysNet (deep, ours)", self.phys_model, self.phys_lab, self.phys_info, self.phys_wave),
             card("POS pulse wave (last 6 s)", self.wave),
             card("POS spectrum", self.spec),
             card("Validation", label("Read your real pulse on a smartwatch or oximeter at the same time, "
@@ -88,7 +98,12 @@ class HeartPage(CameraPage):
         self._update_log_info()
 
     def configure_worker(self, worker):
-        worker.set_processor_factory(_processor_factory(self.status_message.emit))
+        worker.set_processor_factory(_processor_factory(self.status_message.emit, self.phys_model.currentData()))
+
+    def _model_changed(self):
+        self._reset_physnet("Loading model…")
+        if self.worker is not None:   # rebuilt in the camera thread (POS restarts too)
+            self.configure_worker(self.worker)
 
     # ------------------------------------------------------------------ frames
     def on_frame(self, rgb, info):
@@ -137,17 +152,20 @@ class HeartPage(CameraPage):
         self._phys = res
         self.phys_lab.setText(f"{res['bpm']:.0f} BPM")
         diff = f"  ·  Δ POS {res['bpm'] - self._last['bpm']:+.0f}" if self._last and self._last["bpm"] else ""
-        self.phys_info.setText(f"SNR {res['snr']:+.1f} dB{diff}  ·  CPU, every 1.5 s")
+        self.phys_info.setText(f"{res.get('model', 'PhysNet')}  ·  SNR {res['snr']:+.1f} dB{diff}")
         self.phys_wave.set_data(res["wave"])
 
     def camera_stopped(self):
         self._last = None
         self._seq = None
         self._snrs.clear()
+        self._reset_physnet("Start the camera")
+
+    def _reset_physnet(self, text):
         self._phys = None
         self._phys_seq = None
         self.phys_lab.setText("--")
-        self.phys_info.setText("Start the camera")
+        self.phys_info.setText(text)
         self.phys_wave.clear()
         self.bpm_lab.setText("--")
         self.quality.setText("Start the camera")
@@ -169,7 +187,7 @@ class HeartPage(CameraPage):
                 w.writerow(["time", "method", "estimate_bpm", "reference_bpm", "abs_error", "snr_db"])
             now, ref = time.strftime("%Y-%m-%d %H:%M:%S"), self.ref.value()
             msg = []
-            for method, res in (("POS", self._last), ("PhysNet", self._phys)):
+            for method, res in (("POS", self._last), ((self._phys or {}).get("model", "PhysNet"), self._phys)):
                 if res and res.get("bpm") is not None:
                     est = res["bpm"]
                     w.writerow([now, method, f"{est:.1f}", ref, f"{abs(est - ref):.1f}", f"{res['snr']:.2f}"])

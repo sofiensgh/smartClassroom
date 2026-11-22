@@ -14,7 +14,7 @@ ESTIMATE_EVERY_S = 0.5
 
 
 class HeartRateProcessor:
-    def __init__(self, status=None):
+    def __init__(self, status=None, phys_path=None):
         self.face = FaceTracker(status=status)
         self.est = PulseEstimator()
         self._last_t = -1e9
@@ -24,12 +24,14 @@ class HeartRateProcessor:
         self._phys_t = -1e9
         try:
             from .physnet_live import ESTIMATE_EVERY_S as phys_every, PhysNetEstimator, physnet_available
-            if physnet_available():
-                self.phys = PhysNetEstimator()
+            from .physnet_live import PHYSNET_PATH
+            phys_path = phys_path or PHYSNET_PATH
+            if physnet_available(phys_path):
+                self.phys = PhysNetEstimator(phys_path)
                 self.cropper = FaceCropper(size=self.phys.size)
                 self._phys_every = phys_every
             else:
-                self.phys_error = "models/physnet.pt not found (train it: Step 6)"
+                self.phys_error = f"{phys_path} not found (train it: Step 6)"
         except Exception as e:  # noqa: BLE001 - POS must keep working without PhysNet
             self.phys_error = f"PhysNet not loaded: {type(e).__name__}: {e}"
         if self.phys is None:

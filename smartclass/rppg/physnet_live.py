@@ -8,6 +8,7 @@ The network takes ~1 s on the CPU, so it runs in its own thread: the camera neve
 """
 import threading
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 
@@ -18,17 +19,8 @@ PHYSNET_PATH = MODELS_DIR / "physnet.pt"
 ESTIMATE_EVERY_S = 1.5
 
 
-def physnet_available():
-    return PHYSNET_PATH.exists()
-
-
-def resample_frames(t, frames, fs):
-    """Irregular webcam frames -> uniform fs grid (linear blend of the 2 nearest frames)."""
-    tu = np.arange(t[0], t[-1], 1 / fs)
-    j = np.clip(np.searchsorted(t, tu, side="right") - 1, 0, len(t) - 2)
-    a = ((tu - t[j]) / np.maximum(t[j + 1] - t[j], 1e-6)).clip(0, 1)[:, None, None, None]
-    f = frames.astype(np.float32)
-    return np.clip(f[j] * (1 - a) + f[j + 1] * a + 0.5, 0, 255).astype(np.uint8)
+def physnet_available(path=PHYSNET_PATH):
+    return Path(path).exists()
 
 
 class PhysNetEstimator:
@@ -37,7 +29,7 @@ class PhysNetEstimator:
         import torch
 
         from ..models.physnet import PhysNet
-        from ..training.rppg_data import predict_signal
+        from ..training.rppg_data import predict_signal, resample_frames
         torch.set_num_threads(threads)          # leave CPU cores to the camera + MediaPipe
         ck = torch.load(path, map_location="cpu", weights_only=True)
         self.model = PhysNet(ck.get("width", 32))
@@ -45,6 +37,8 @@ class PhysNetEstimator:
         self.model.eval()
         self.size, self.fs = int(ck.get("size", PHYS_SIZE)), float(ck.get("fs", PHYS_FS))
         self.val_mae = ck.get("val_mae")
+        self.name = ck.get("name", "PhysNet v1")
+        self._resample = resample_frames
         self._predict = lambda frames: predict_signal(self.model, frames, torch.device("cpu"))
         self.window_s, self.min_s, self.max_gap_s = window_s, min_s, max_gap_s
         self.t, self.frames = deque(), deque()
@@ -112,14 +106,14 @@ class PhysNetEstimator:
                 self.seq += 1
 
     def _estimate(self, t, frames):
-        clip = resample_frames(t, frames, self.fs)
+        clip = self._resample(t, frames, self.fs)
         if len(clip) < PHYS_T:
             return None
         sig = bandpass(self._predict(clip), self.fs)
         bpm, snr, fb, p = spectrum_bpm(sig, self.fs)
         self.history.append(bpm)
         tail = sig[-int(6 * self.fs):]
-        return {"bpm": float(np.median(self.history)), "bpm_raw": bpm, "snr": snr,
+        return {"bpm": float(np.median(self.history)), "bpm_raw": bpm, "snr": snr, "model": self.name,
                 "wave": tail / max(np.abs(tail).max(), 1e-12), "spec_bpm": fb, "spec": p}
 
     def close(self):

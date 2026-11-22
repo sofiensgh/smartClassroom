@@ -1,6 +1,7 @@
 """Step 6 - UBFC-rPPG cache -> PyTorch chunks for PhysNet, subject split, normalisation, augmentation."""
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -63,14 +64,66 @@ def predict_signal(model, frames, device, t=PHYS_T, batch=8):
     return out / np.maximum(wsum, 1e-9)
 
 
+def resample_frames(t, frames, fs, grid=None):
+    """Frames taken at irregular times t -> uniform fs grid (linear blend of the 2 nearest frames).
+    Used live (webcam -> 30 fps) and by webcam_degrade (to imitate exactly that)."""
+    t = np.asarray(t, dtype=np.float64)
+    tu = np.arange(t[0], t[-1], 1 / fs) if grid is None else grid
+    j = np.clip(np.searchsorted(t, tu, side="right") - 1, 0, len(t) - 2)
+    a = ((tu - t[j]) / np.maximum(t[j + 1] - t[j], 1e-6)).clip(0, 1)[:, None, None, None]
+    f = frames.astype(np.float32)
+    return np.clip(f[j] * (1 - a) + f[j + 1] * a + 0.5, 0, 255).astype(np.uint8)
+
+
+def webcam_degrade(frames, rng, fs=30.0, fps=(15, 30), jpeg=(50, 95), noise=(0, 3), blur=(0.3, 1.2), p_blur=0.5,
+                   gain=0.08):
+    """Make clean UBFC face crops look like the live webcam (Step 6b domain shift, measured live:
+    PhysNet MAE 10.4 BPM vs POS 3.2). (lo, hi) = random range; lo == hi = fixed (test).
+      - lower, irregular frame rate (15-30 fps, +-15 % jitter) then linear resample to 30 fps, exactly as live
+      - white-balance difference (per-channel gain), sensor noise, slight blur, JPEG compression
+    The PPG label is NOT changed: the pulse is the same, only the camera is worse."""
+    t_len = len(frames)
+    x = frames
+    f_cam = rng.uniform(*fps)
+    if f_cam < fs - 1:
+        dt = rng.uniform(0.85, 1.15, int(t_len / fs * f_cam) + 4) / f_cam
+        tc = np.concatenate([[0.0], np.cumsum(dt)]) + rng.uniform(0, 1 / f_cam)
+        tc = tc[tc <= (t_len - 1) / fs]
+        if len(tc) >= 2:
+            x = resample_frames(tc, x[np.round(tc * fs).astype(int)], fs, grid=np.arange(t_len) / fs)
+    g = rng.uniform(1 - gain, 1 + gain, 3).astype(np.float32)
+    sb = rng.uniform(*blur) if rng.random() < p_blur else 0.0
+    ns, q = rng.uniform(*noise), int(rng.uniform(*jpeg))
+    out = np.empty_like(x)
+    for i, f in enumerate(x):
+        f = f.astype(np.float32) * g
+        if sb > 0:
+            f = cv2.GaussianBlur(f, (0, 0), sb)
+        if ns > 0:
+            f += rng.normal(0, ns, f.shape).astype(np.float32)
+        f = np.clip(f + 0.5, 0, 255).astype(np.uint8)
+        if q < 100:   # JPEG works in YCrCb from BGR: flip RGB -> BGR and back
+            ok, buf = cv2.imencode(".jpg", np.ascontiguousarray(f[:, :, ::-1]), [cv2.IMWRITE_JPEG_QUALITY, q])
+            f = cv2.imdecode(buf, cv2.IMREAD_COLOR)[:, :, ::-1]
+        out[i] = f
+    return out
+
+
+def degrade_test_video(frames, seed):
+    """Fixed, reproducible 'webcam' version of a test video: 20 fps +-15 %, JPEG 60, noise 2, blur 0.7."""
+    return webcam_degrade(frames, np.random.default_rng(seed), fps=(20, 20), jpeg=(60, 60), noise=(2, 2),
+                          blur=(0.7, 0.7), p_blur=1.0, gain=0.0)
+
+
 class ChunkDataset(Dataset):
     """Overlapping PHYS_T-frame chunks of the given subjects -> (clip, ppg)."""
 
-    def __init__(self, data, subjects, t=PHYS_T, stride=None, augment=False, seed=0):
-        self.data, self.t, self.augment = data, t, augment
+    def __init__(self, data, subjects, t=PHYS_T, stride=None, augment=False, webcam_p=0.0, seed=0):
+        """augment: flip + brightness. webcam_p: probability of webcam_degrade (0 = PhysNet v1)."""
+        self.data, self.t, self.augment, self.webcam_p = data, t, augment, webcam_p
         stride = stride or t // 2
         self.index = [(s, i) for s in subjects for i in range(0, len(data[s]["ppg"]) - t + 1, stride)]
-        self.rng = np.random.default_rng(seed)
+        self.seed = seed
 
     def __len__(self):
         return len(self.index)
@@ -80,7 +133,10 @@ class ChunkDataset(Dataset):
         frames = self.data[s]["frames"][i:i + self.t]
         ppg = self.data[s]["ppg"][i:i + self.t]
         if self.augment:
-            r = self.rng
+            # torch seeds every DataLoader worker differently each epoch -> different, reproducible augmentations
+            r = np.random.default_rng([self.seed, k, int(torch.randint(0, 2 ** 31 - 1, (1,)))])
+            if r.random() < self.webcam_p:
+                frames = webcam_degrade(np.asarray(frames), r)
             if r.random() < 0.5:
                 frames = frames[:, :, ::-1]                       # horizontal flip
             frames = np.clip(frames.astype(np.float32) * r.uniform(0.8, 1.2) + r.uniform(-15, 15), 0, 255)
