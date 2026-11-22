@@ -77,6 +77,37 @@ def roi_mean_rgb(bgr, polygons):
     return np.array([r, g, b])
 
 
+class FaceCropper:
+    """Square face crop for PhysNet, IDENTICAL in dataset preprocessing (Step 6) and live use.
+
+    The box comes from the landmark bounding box (enlarged), smoothed over time so the crop does
+    not jitter (jitter = fake colour changes = noise in the pulse). Without a face, the last box is kept.
+    """
+
+    def __init__(self, size=72, scale=1.2, smooth=0.3):
+        self.size, self.scale, self.smooth = size, scale, smooth
+        self.box = None   # (cx, cy, side) in pixels
+
+    def __call__(self, frame, landmarks):
+        h, w = frame.shape[:2]
+        if landmarks is not None:
+            xy = landmarks[:, :2] * [w, h]
+            (x0, y0), (x1, y1) = xy.min(0), xy.max(0)
+            new = np.array([(x0 + x1) / 2, (y0 + y1) / 2, max(x1 - x0, y1 - y0) * self.scale])
+            self.box = new if self.box is None else self.box + (new - self.box) * self.smooth
+        if self.box is None:
+            return None
+        cx, cy, side = self.box
+        half = int(side / 2)
+        xa, ya = int(cx) - half, int(cy) - half
+        pad = max(0, -xa, -ya, xa + 2 * half - w, ya + 2 * half - h)
+        img = cv2.copyMakeBorder(frame, pad, pad, pad, pad, cv2.BORDER_REPLICATE) if pad else frame
+        crop = img[ya + pad:ya + pad + 2 * half, xa + pad:xa + pad + 2 * half]
+        if crop.size == 0:
+            return None
+        return cv2.resize(crop, (self.size, self.size), interpolation=cv2.INTER_AREA)
+
+
 def draw_rois(frame, polygons):
     overlay = frame.copy()
     for name, poly in polygons.items():

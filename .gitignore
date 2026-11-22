@@ -15,3 +15,5 @@ data/gestures/**/*.tmp
 # Local editor / assistant settings (contain local paths)
 .vscode/
 .claude/
+# Preprocessed UBFC-rPPG (large and re-creatable; third-party dataset, not ours to publish)
+data/ubfc_cache/

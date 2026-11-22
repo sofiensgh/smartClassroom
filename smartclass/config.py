@@ -24,6 +24,12 @@ HR_FS = 30.0            # traces are resampled to this rate (the camera FPS is i
 HR_BAND = (0.7, 4.0)    # Hz = 42-240 BPM
 HR_DIR = OUTPUT_DIR / "heart"
 
+# Step 6: PhysNet on UBFC-rPPG
+UBFC_CACHE = DATA_DIR / "ubfc_cache"   # preprocessed subjects (face crops + ROI RGB + PPG), one .npz each
+PHYS_SIZE = 72          # face crop size (pixels)
+PHYS_T = 128            # frames per training chunk (~4.3 s at 30 fps)
+PHYS_FS = 30.0          # UBFC-rPPG frame rate; live frames are resampled to it
+
 # Gestures for Magic Slides (Step 2 dataset, Step 3 models)
 GESTURES = {
     "none": "rest / no gesture",
