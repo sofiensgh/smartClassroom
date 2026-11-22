@@ -1,0 +1,4 @@
+WARNING: only 1 person(s) -> random split (same people in train and test, scores are optimistic). Record at least 3 people for a real person split.
+train: 65 samples
+val: 15 samples
+test: 19 samples

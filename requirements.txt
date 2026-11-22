@@ -1,0 +1,11 @@
+# For GPU training install torch from https://pytorch.org (pick your CUDA version)
+torch
+torchvision
+PySide6-Essentials  # QtCore/QtGui/QtWidgets only (full PySide6 adds ~200 MB of WebEngine etc. we don't use)
+opencv-contrib-python  # mediapipe depends on it; installing opencv-python too gives two clashing cv2 packages
+mediapipe
+numpy
+scipy
+pandas
+matplotlib
+pyautogui

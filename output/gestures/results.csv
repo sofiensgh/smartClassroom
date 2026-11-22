@@ -1,0 +1,6 @@
+model,description,params,epochs_run,best_epoch,val_macro_f1,test_acc,test_macro_f1,latency_ms,train_time_s
+mlp,MLP single-frame (baseline),26118,80,37,1.0,1.0,1.0,0.37,5.3
+lstm,LSTM on landmarks (main),273798,80,52,1.0,0.9474,0.9429,0.36,6.9
+gru,GRU on landmarks,207750,80,41,1.0,0.8421,0.825,0.39,5.4
+lstm_shape,LSTM without motion features (ablation),273286,80,49,1.0,0.9474,0.9429,0.36,6.4
+cnn,CNN+GRU on hand crops,341030,68,22,1.0,0.8421,0.8333,1.04,12.1

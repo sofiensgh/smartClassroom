@@ -1,0 +1,45 @@
+"""Shared configuration: paths, model files, gestures."""
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT / "data"
+MODELS_DIR = ROOT / "models"
+OUTPUT_DIR = ROOT / "output"
+
+APP_NAME = "Smart Classroom"
+APP_VERSION = "0.4 (Step 4)"
+
+# Pretrained MediaPipe models (tools only: the deep-learning models of the project are trained by us)
+HAND_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+                  "hand_landmarker/float16/1/hand_landmarker.task")
+HAND_MODEL_PATH = MODELS_DIR / "hand_landmarker.task"
+
+# Gestures for Magic Slides (Step 2 dataset, Step 3 models)
+GESTURES = {
+    "none": "rest / no gesture",
+    "swipe_right": "next slide",
+    "swipe_left": "previous slide",
+    "point": "laser pointer",
+    "pinch": "zoom",
+    "open_palm": "black screen / pause",
+}
+# Recording protocol shown to every participant (keep it identical for everyone)
+GESTURE_HELP = {
+    "none": "Hand visible but idle, or moving naturally (scratching, talking). Also record with NO hand.",
+    "swipe_right": "Open hand on the LEFT of the screen, sweep it to the RIGHT once, then HOLD it there "
+                   "until REC ends. Don't bring it back.",
+    "swipe_left": "Open hand on the RIGHT of the screen, sweep it to the LEFT once, then HOLD it there "
+                  "until REC ends. Don't bring it back.",
+    "point": "Index finger extended, others folded; move the fingertip slowly around.",
+    "pinch": "Thumb and index start apart, then pinch together (or open from a pinch).",
+    "open_palm": "Open palm facing the camera, fingers spread, hold still.",
+}
+SEQ_LEN = 30  # frames per gesture sample (~1-1.5 s depending on FPS)
+
+# Step 2: gesture dataset  ->  data/gestures/<person>/<gesture>/<nnnn>.npz
+GESTURE_DIR = DATA_DIR / "gestures"
+SAMPLES_PER_GESTURE = 100   # target per person and gesture
+CROP_SIZE = 96              # hand crops for the CNN models (stored as JPEG inside the .npz)
+MIN_HAND_RATIO = 0.6        # a gesture sample is rejected if the hand is visible in < 60% of the frames
+
+CAMERA_WIDTH, CAMERA_HEIGHT = 960, 540

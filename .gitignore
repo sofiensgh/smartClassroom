@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Downloaded automatically on first run
+models/hand_landmarker.task
+# Created by `python -m smartclass.training.pack` / downloaded from Colab
+SmartClassroom_train.zip
+SmartClassroom_results*.zip
+# Interrupted sample writes
+data/gestures/**/*.tmp
+
+# Local editor / assistant settings (contain local paths)
+.vscode/
+.claude/
